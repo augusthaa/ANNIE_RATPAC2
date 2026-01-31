@@ -516,13 +516,13 @@ Processor::Result OutANNIEClusterProc::DSEvent(DS::Root *ds) {
       hitPMTNCrossings.clear();
 
       for (int pmtc = 0; pmtc < ev->GetPMTCount(); pmtc++) {
-        RAT::DS::PMT *pmt = ev->GetPMT(pmtc);
+        RAT::DS::PMT *pmt = ev->GetOrCreatePMT(pmtc);
         hitPMTID.push_back(pmtinfo->GetChannelNumber(pmt->GetID()));
         hitPMTTime.push_back(pmt->GetTime());
         hitPMTCharge.push_back(pmt->GetCharge());
       }
       for (int pmtc = 0; pmtc < ev->GetDigitPMTCount(); pmtc++) {
-        RAT::DS::DigitPMT *digitpmt = ev->GetDigitPMT(pmtc);
+        RAT::DS::DigitPMT *digitpmt = ev->GetOrCreateDigitPMT(pmtc);
         hitPMTDigitizedTime.push_back(digitpmt->GetDigitizedTime());
         hitPMTDigitizedCharge.push_back(digitpmt->GetDigitizedCharge());
         hitPMTNCrossings.push_back(digitpmt->GetNCrossings());
