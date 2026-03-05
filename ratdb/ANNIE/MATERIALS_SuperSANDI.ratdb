@@ -1,0 +1,10 @@
+{
+"name": "MATERIAL",
+"index": "superSANDI_nylon",
+"run_range" : [0, 0],
+"density": 1.15,
+"nelements": 4,
+"nmaterials": 0,
+"elements": ["Hydrogen", "Carbon","Oxygen","Nitrogen"],
+"elemprop": [0.57895, 0.31579, 0.05263, 0.05263],
+}

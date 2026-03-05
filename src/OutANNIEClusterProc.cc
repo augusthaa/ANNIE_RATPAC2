@@ -2,6 +2,8 @@
 #include <TTimeStamp.h>
 #include <TTree.h>
 #include <TVector3.h>
+#include <TROOT.h>
+#include <TMath.h>
 
 #include <RAT/DB.hh>
 #include <RAT/DS/DigitPMT.hh>
@@ -22,267 +24,300 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <random>
 
 namespace RAT {
 
-OutANNIEClusterProc::OutANNIEClusterProc() : Processor("outanniecluster") {
-  outputFile = nullptr;
-  outputTree = nullptr;
-  metaTree = nullptr;
-  runBranch = new DS::Run();
+  OutANNIEClusterProc::OutANNIEClusterProc() : Processor("outanniecluster") {
+    outputFile = nullptr;
+    outputTree = nullptr;
+    metaTree = nullptr;
+    runBranch = new DS::Run();
 
-  // Load options from the database
-  DB *db = DB::Get();
-  DBLinkPtr table = db->GetLink("IO", "OutANNIEClusterProc");
-  try {
-    defaultFilename = table->GetS("default_output_filename");
-    if (defaultFilename.find(".") == std::string::npos) {
-      defaultFilename += ".ntuple.root";
+    // Load options from the database
+    DB *db = DB::Get();
+    DBLinkPtr table = db->GetLink("IO", "OutANNIEClusterProc");
+    try {
+      defaultFilename = table->GetS("default_output_filename");
+      if (defaultFilename.find(".") == std::string::npos) {
+        defaultFilename += ".ntuple.root";
+      }
+    } catch (DBNotFoundError &e) {
+      defaultFilename = "output.ntuple.root";
     }
-  } catch (DBNotFoundError &e) {
-    defaultFilename = "output.ntuple.root";
-  }
-  try {
-    options.tracking = table->GetZ("include_tracking");
-    options.mcparticles = table->GetZ("include_mcparticles");
-    options.pmthits = table->GetZ("include_pmthits");
-    options.untriggered = table->GetZ("include_untriggered_events");
-    options.mchits = table->GetZ("include_mchits");
-    options.clusteredhits = table->GetZ("include_clusteredhits");
-  } catch (DBNotFoundError &e) {
-    options.tracking = false;
-    options.mcparticles = false;
-    options.pmthits = true;
-    options.untriggered = false;
-    options.mchits = true;
-    options.clusteredhits = true;
-  }
-  try{
-    clusterSettings.clusterFindingWindow = table->GetI("clusterSettings.clusterFindingWindow");
-    clusterSettings.acqTimeWindow = table->GetI("acqTimeWindow");
-    clusterSettings.clusterIntegrationWindow = table->GetI("clusterIntegrationWindow");
-    clusterSettings.minHitsPerCluster = table->GetI("minHitsPerCluster");
-    clusterSettings.end_of_window_time_cut = table->GetD("end_of_window_time_cut");
-    clusterSettings.datalikeIntegrationWindow = table->GetI("datalikeIntegrationWindow");
-  } catch (DBNotFoundError &e) {
-    clusterSettings.clusterFindingWindow = 40;
-    clusterSettings.acqTimeWindow = 70000;
-    clusterSettings.clusterIntegrationWindow = 40;
-    clusterSettings.minHitsPerCluster = 5;
-    clusterSettings.end_of_window_time_cut = 0.95;
-    clusterSettings.datalikeIntegrationWindow = 10;
-  }
-}
-
-bool OutANNIEClusterProc::OpenFile(std::string filename) {
-  int i = 0;
-  outputFile = TFile::Open(filename.c_str(), "RECREATE");
-  // Meta Tree
-  metaTree = new TTree("meta", "meta");
-  metaTree->Branch("runId", &runId);
-  metaTree->Branch("runType", &runType);
-  metaTree->Branch("runTime", &runTime);
-  metaTree->Branch("dsentries", &dsentries);
-  metaTree->Branch("macro", &macro);
-  metaTree->Branch("pmtType", &pmtType);
-  metaTree->Branch("pmtId", &pmtId);
-  metaTree->Branch("pmtEff", &pmtEff);
-  metaTree->Branch("pmtX", &pmtX);
-  metaTree->Branch("pmtY", &pmtY);
-  metaTree->Branch("pmtZ", &pmtZ);
-  metaTree->Branch("pmtU", &pmtU);
-  metaTree->Branch("pmtV", &pmtV);
-  metaTree->Branch("pmtW", &pmtW);
-  this->AssignAdditionalMetaAddresses();
-  dsentries = 0;
-  // Data Tree
-  outputTree = new TTree("output", "output");
-  // These are the *first* particles MC positions, directions, and time
-  outputTree->Branch("mcpdg", &mcpdg);
-  outputTree->Branch("mcx", &mcx);
-  outputTree->Branch("mcy", &mcy);
-  outputTree->Branch("mcz", &mcz);
-  outputTree->Branch("mcu", &mcu);
-  outputTree->Branch("mcv", &mcv);
-  outputTree->Branch("mcw", &mcw);
-  outputTree->Branch("mcke", &mcke);
-  outputTree->Branch("mct", &mct);
-
-  // Getting the stopping point / end of track of the first particle
-  outputTree->Branch("mcx_firstStep", &mcx_firstStep);
-  outputTree->Branch("mcy_firstStep", &mcy_firstStep);
-  outputTree->Branch("mcz_firstStep", &mcz_firstStep);
-  outputTree->Branch("mcx_lastStep", &mcx_lastStep);
-  outputTree->Branch("mcy_lastStep", &mcy_lastStep);
-  outputTree->Branch("mcz_lastStep", &mcz_lastStep);
-
-
-  // Event IDs and trigger time and nhits
-  outputTree->Branch("evid", &evid);
-  outputTree->Branch("subev", &subev);
-  outputTree->Branch("nhits", &nhits);
-  outputTree->Branch("triggerTime", &triggerTime);
-  // MC Information
-  outputTree->Branch("mcparticlecount", &mcpcount);
-  outputTree->Branch("mcpecount", &mcpecount);
-  outputTree->Branch("mcnhits", &mcnhits);
-  outputTree->Branch("scintEdep", &scintEdep);
-  outputTree->Branch("scintEdepQuenched", &scintEdepQuenched);
-  // Total number of produced photons of each type
-  outputTree->Branch("scintPhotons", &scintPhotons);
-  outputTree->Branch("remPhotons", &remPhotons);
-  outputTree->Branch("cherPhotons", &cherPhotons);
-  if (options.mcparticles) {
-    // Save information about *all* particles that are simulated
-    // Variable naming is the same as the first particle, just plural.
-    outputTree->Branch("mcpdgs", &pdgcodes);
-    outputTree->Branch("mcxs", &mcPosx);
-    outputTree->Branch("mcys", &mcPosy);
-    outputTree->Branch("mczs", &mcPosz);
-    outputTree->Branch("mcus", &mcDirx);
-    outputTree->Branch("mcvs", &mcDiry);
-    outputTree->Branch("mcws", &mcDirz);
-    outputTree->Branch("mckes", &mcKEnergies);
-    outputTree->Branch("mcts", &mcTime);
-  }
-  if (options.pmthits) {
-    // Save full PMT hit informations
-    outputTree->Branch("hitPMTID", &hitPMTID);
-    // Information about *first* detected PE
-    outputTree->Branch("hitPMTTime", &hitPMTTime);
-    outputTree->Branch("hitPMTCharge", &hitPMTCharge);
-    // Output of the waveform analysis
-    outputTree->Branch("hitPMTDigitizedTime", &hitPMTDigitizedTime);
-    outputTree->Branch("hitPMTDigitizedCharge", &hitPMTDigitizedCharge);
-    outputTree->Branch("hitPMTNCrossings", &hitPMTNCrossings);
-  }
-  if (options.mchits) {
-    // Save full MC PMT hit information
-    outputTree->Branch("mcPMTID", &mcpmtid);
-    outputTree->Branch("mcPMTNPE", &mcpmtnpe);
-    outputTree->Branch("mcPMTCharge", &mcpmtcharge);
-
-    outputTree->Branch("mcPEHitTime", &mcpehittime);
-    outputTree->Branch("mcPEFrontEndTime", &mcpefrontendtime);
-    // Production process
-    // 1=Cherenkov, 0=Dark noise, 2=Scint., 3=Reem., 4=Unknown
-    outputTree->Branch("mcPEProcess", &mcpeprocess);
-    outputTree->Branch("mcPEWavelength", &mcpewavelength);
-    outputTree->Branch("mcPEx", &mcpex);
-    outputTree->Branch("mcPEy", &mcpey);
-    outputTree->Branch("mcPEz", &mcpez);
-    outputTree->Branch("mcPECharge", &mcpecharge);
-  }
-  if (options.tracking) {
-    // Save particle tracking information
-    outputTree->Branch("trackPDG", &trackPDG);
-    outputTree->Branch("trackPosX", &trackPosX);
-    outputTree->Branch("trackPosY", &trackPosY);
-    outputTree->Branch("trackPosZ", &trackPosZ);
-    outputTree->Branch("trackMomX", &trackMomX);
-    outputTree->Branch("trackMomY", &trackMomY);
-    outputTree->Branch("trackMomZ", &trackMomZ);
-    outputTree->Branch("trackKE", &trackKE);
-    outputTree->Branch("trackTime", &trackTime);
-    outputTree->Branch("trackProcess", &trackProcess);
-    metaTree->Branch("processCodeMap", &processCodeMap);
-  }
-  if (options.clusteredhits) {
-    //gInterpreter->GenerateDictionary("std::vector<std::vector<double> >", "vector");
-    //gInterpreter->GenerateDictionary("std::vector<std::vector<int> >", "vector");
-    outputTree->Branch("numClusters", &numClusters);
-    outputTree->Branch("clusterCharge", &clusterCharge);
-    outputTree->Branch("clusterChargeBalance", &clusterChargeBalance);
-    outputTree->Branch("clusterNPE", &clusterNPE);
-    outputTree->Branch("clusterTime", &clusterTime);
-    outputTree->Branch("numClusteredPMTHits", &numClusteredPMTHits);
-    outputTree->Branch("clusterHitsPMTID", &clusterHitsPMTID);
-    outputTree->Branch("clusterHitsPMTTime", &clusterHitsPMTTime);
-    outputTree->Branch("clusterHitsNPE", &clusterHitsNPE);
-    outputTree->Branch("clusterHitsPMTCharge", &clusterHitsPMTCharge);
-  }
-  this->AssignAdditionalAddresses();
-
-  return true;
-}
-
-Processor::Result OutANNIEClusterProc::DSEvent(DS::Root *ds) {
-  if (!this->outputFile) {
-    if (!OpenFile(this->defaultFilename.c_str())) {
-      Log::Die("No output file specified");
+    try {
+      options.tracking = table->GetZ("include_tracking");
+      options.mcparticles = table->GetZ("include_mcparticles");
+      options.pmthits = table->GetZ("include_pmthits");
+      options.untriggered = table->GetZ("include_untriggered_events");
+      options.mchits = table->GetZ("include_mchits");
+      options.clusteredhits = table->GetZ("include_clusteredhits");
+    } catch (DBNotFoundError &e) {
+      options.tracking = false;
+      options.mcparticles = false;
+      options.pmthits = true;
+      options.untriggered = false;
+      options.mchits = true;
+      options.clusteredhits = true;
+    }
+    try{
+      clusterSettings.clusterFindingWindow = table->GetI("clusterSettings.clusterFindingWindow");
+      clusterSettings.acqTimeWindow = table->GetI("acqTimeWindow");
+      clusterSettings.clusterIntegrationWindow = table->GetI("clusterIntegrationWindow");
+      clusterSettings.minHitsPerCluster = table->GetI("minHitsPerCluster");
+      clusterSettings.end_of_window_time_cut = table->GetD("end_of_window_time_cut");
+      clusterSettings.datalikeIntegrationWindow = table->GetI("datalikeIntegrationWindow");
+    } catch (DBNotFoundError &e) {
+      clusterSettings.clusterFindingWindow = 40;
+      clusterSettings.acqTimeWindow = 70000;
+      clusterSettings.clusterIntegrationWindow = 40;
+      clusterSettings.minHitsPerCluster = 5;
+      clusterSettings.end_of_window_time_cut = 0.95;
+      clusterSettings.datalikeIntegrationWindow = 10;
     }
   }
-  runBranch = DS::RunStore::GetRun(ds);
-  DS::PMTInfo *pmtinfo = runBranch->GetPMTInfo();
-  ULong64_t stonano = 1000000000;
-  dsentries++;
-  // Clear the previous vectors
-  pdgcodes.clear();
-  mcKEnergies.clear();
-  mcPosx.clear();
-  mcPosy.clear();
-  mcPosz.clear();
-  mcDirx.clear();
-  mcDiry.clear();
-  mcDirz.clear();
-  mcTime.clear();
 
-  DS::MC *mc = ds->GetMC();
-  mcpcount = mc->GetMCParticleCount();
-  for (int pid = 0; pid < mcpcount; pid++) {
-    DS::MCParticle *particle = mc->GetMCParticle(pid);
-    pdgcodes.push_back(particle->GetPDGCode());
-    mcKEnergies.push_back(particle->GetKE());
-    TVector3 mcpos = particle->GetPosition();
-    TVector3 mcdir = particle->GetMomentum();
-    mcPosx.push_back(mcpos.X());
-    mcPosy.push_back(mcpos.Y());
-    mcPosz.push_back(mcpos.Z());
-    mcDirx.push_back(mcdir.X() / mcdir.Mag());
-    mcDiry.push_back(mcdir.Y() / mcdir.Mag());
-    mcDirz.push_back(mcdir.Z() / mcdir.Mag());
-    mcTime.push_back(particle->GetTime());
-  }
-  // First particle's position, direction, and time
-  mcpdg = pdgcodes[0];
-  mcx = mcPosx[0];
-  mcy = mcPosy[0];
-  mcz = mcPosz[0];
-  mcu = mcDirx[0];
-  mcv = mcDiry[0];
-  mcw = mcDirz[0];
-  mct = mcTime[0];
-  mcke = accumulate(mcKEnergies.begin(), mcKEnergies.end(), 0.0);
+  bool OutANNIEClusterProc::OpenFile(std::string filename) {
+    int i = 0;
+    outputFile = TFile::Open(filename.c_str(), "RECREATE");
+    // Meta Tree
+    metaTree = new TTree("meta", "meta");
+    metaTree->Branch("runId", &runId);
+    metaTree->Branch("runType", &runType);
+    metaTree->Branch("runTime", &runTime);
+    metaTree->Branch("dsentries", &dsentries);
+    metaTree->Branch("macro", &macro);
+    metaTree->Branch("pmtType", &pmtType);
+    metaTree->Branch("pmtId", &pmtId);
+    metaTree->Branch("pmtEff", &pmtEff);
+    metaTree->Branch("pmtX", &pmtX);
+    metaTree->Branch("pmtY", &pmtY);
+    metaTree->Branch("pmtZ", &pmtZ);
+    metaTree->Branch("pmtU", &pmtU);
+    metaTree->Branch("pmtV", &pmtV);
+    metaTree->Branch("pmtW", &pmtW);
+    this->AssignAdditionalMetaAddresses();
+    dsentries = 0;
+    // Data Tree
+    outputTree = new TTree("output", "output");
+    // These are the *first* particles MC positions, directions, and time
+    outputTree->Branch("mcpdg", &mcpdg);
+    outputTree->Branch("mcx", &mcx);
+    outputTree->Branch("mcy", &mcy);
+    outputTree->Branch("mcz", &mcz);
+    outputTree->Branch("mcu", &mcu);
+    outputTree->Branch("mcv", &mcv);
+    outputTree->Branch("mcw", &mcw);
+    outputTree->Branch("mcke", &mcke);
+    outputTree->Branch("mct", &mct);
 
-  mcx_firstStep = -666.0;
-  mcy_firstStep = -666.0;
-  mcz_firstStep = -666.0;
-  mcx_lastStep = -666.0;
-  mcy_lastStep = -666.0;
-  mcz_lastStep = -666.0;
+    // Getting the stopping point / end of track of the first particle
+    outputTree->Branch("mcx_firstStep", &mcx_firstStep);
+    outputTree->Branch("mcy_firstStep", &mcy_firstStep);
+    outputTree->Branch("mcz_firstStep", &mcz_firstStep);
+    outputTree->Branch("mcx_lastStep", &mcx_lastStep);
+    outputTree->Branch("mcy_lastStep", &mcy_lastStep);
+    outputTree->Branch("mcz_lastStep", &mcz_lastStep);
 
-  //Getting the stopping point / end of track of the first particle
-  for (int trk = 0; trk < mc->GetMCTrackCount(); trk++) {
-    DS::MCTrack *track = mc->GetMCTrack(trk);
 
-    //Look only at the primary simulated particle
-    if( track->GetPDGCode() == mcpdg ){
-      //info << dformat("OutANNIEClusterProc: track number %d, track pdg code %d, MC pdg code %d \n", trk, track->GetPDGCode(), mcpdg);
-      DS::MCTrackStep *step = track->GetMCTrackStep(0);
-      TVector3 tv = step->GetEndpoint();
-      mcx_firstStep = tv.X();
-      mcy_firstStep = tv.Y();
-      mcz_firstStep = tv.Z();
-      step = track->GetMCTrackStep(track->GetMCTrackStepCount()-1);
-      tv = step->GetEndpoint();
-      mcx_lastStep = tv.X();
-      mcy_lastStep = tv.Y();
-      mcz_lastStep = tv.Z();
-      break;
+    // Event IDs and trigger time and nhits
+    outputTree->Branch("evid", &evid);
+    outputTree->Branch("subev", &subev);
+    outputTree->Branch("nhits", &nhits);
+    outputTree->Branch("triggerTime", &triggerTime);
+    // MC Information
+    outputTree->Branch("mcparticlecount", &mcpcount);
+    outputTree->Branch("mcpecount", &mcpecount);
+    outputTree->Branch("mcnhits", &mcnhits);
+    outputTree->Branch("scintEdep", &scintEdep);
+    outputTree->Branch("scintEdepQuenched", &scintEdepQuenched);
+    // Total number of produced photons of each type
+    outputTree->Branch("scintPhotons", &scintPhotons);
+    outputTree->Branch("remPhotons", &remPhotons);
+    outputTree->Branch("cherPhotons", &cherPhotons);
+    if (options.mcparticles) {
+      // Save information about *all* particles that are simulated
+      // Variable naming is the same as the first particle, just plural.
+      outputTree->Branch("mcpdgs", &pdgcodes);
+      outputTree->Branch("mcxs", &mcPosx);
+      outputTree->Branch("mcys", &mcPosy);
+      outputTree->Branch("mczs", &mcPosz);
+      outputTree->Branch("mcus", &mcDirx);
+      outputTree->Branch("mcvs", &mcDiry);
+      outputTree->Branch("mcws", &mcDirz);
+      outputTree->Branch("mckes", &mcKEnergies);
+      outputTree->Branch("mcts", &mcTime);
+      outputTree->Branch("eventExist", &eventExist);
+
+      outputTree->Branch("n_trackPDG", &n_trackPDG);
+      //outputTree->Branch("n_trackPDG_str", &n_trackPDG_str);
+      //outputTree->Branch("n_track_nCapVol", &n_track_nCapVol);
+      outputTree->Branch("n_trackPosX", &n_trackPosX);
+      outputTree->Branch("n_trackPosY", &n_trackPosY);
+      outputTree->Branch("n_trackPosZ", &n_trackPosZ);
+      outputTree->Branch("n_trackMomX", &n_trackMomX);
+      outputTree->Branch("n_trackMomY", &n_trackMomY);
+      outputTree->Branch("n_trackMomZ", &n_trackMomZ);
+      outputTree->Branch("n_trackKE", &n_trackKE);
+      outputTree->Branch("n_trackTime", &n_trackTime);
+      outputTree->Branch("CapInsideSANDI", &CapInsideSANDI);
+
     }
-    /*
-    //Primary particle is neutron, save scattered protons...
-    } else if (mcpdg == 2112 && track->GetPDGCode() == 2212){ 
+    if (options.pmthits) {
+      // Save full PMT hit informations
+      outputTree->Branch("hitPMTID", &hitPMTID);
+      // Information about *first* detected PE
+      outputTree->Branch("hitPMTTime", &hitPMTTime);
+      outputTree->Branch("hitPMTCharge", &hitPMTCharge);
+      // Output of the waveform analysis
+      outputTree->Branch("hitPMTDigitizedTime", &hitPMTDigitizedTime);
+      outputTree->Branch("hitPMTDigitizedCharge", &hitPMTDigitizedCharge);
+      outputTree->Branch("hitPMTNCrossings", &hitPMTNCrossings);
+    }
+    if (options.mchits) {
+      // Save full MC PMT hit information
+      outputTree->Branch("mcPMTID", &mcpmtid);
+      outputTree->Branch("mcPMTNPE", &mcpmtnpe);
+      outputTree->Branch("mcPMTCharge", &mcpmtcharge);
+
+      outputTree->Branch("mcPEHitTime", &mcpehittime);
+      outputTree->Branch("mcPEFrontEndTime", &mcpefrontendtime);
+      // Production process
+      // 1=Cherenkov, 0=Dark noise, 2=Scint., 3=Reem., 4=Unknown
+      outputTree->Branch("mcPEProcess", &mcpeprocess);
+      outputTree->Branch("mcPEWavelength", &mcpewavelength);
+      outputTree->Branch("mcPEx", &mcpex);
+      outputTree->Branch("mcPEy", &mcpey);
+      outputTree->Branch("mcPEz", &mcpez);
+      outputTree->Branch("mcPECharge", &mcpecharge);
+    }
+    if (options.tracking) {
+      // Save particle tracking information
+      outputTree->Branch("trackPDG", &trackPDG);
+      outputTree->Branch("trackPosX", &trackPosX);
+      outputTree->Branch("trackPosY", &trackPosY);
+      outputTree->Branch("trackPosZ", &trackPosZ);
+      outputTree->Branch("trackMomX", &trackMomX);
+      outputTree->Branch("trackMomY", &trackMomY);
+      outputTree->Branch("trackMomZ", &trackMomZ);
+      outputTree->Branch("trackKE", &trackKE);
+      outputTree->Branch("trackTime", &trackTime);
+      outputTree->Branch("trackProcess", &trackProcess);
+      metaTree->Branch("processCodeMap", &processCodeMap);
+    }
+    if (options.clusteredhits) {
+      //gInterpreter->GenerateDictionary("std::vector<std::vector<double> >", "vector");
+      //gInterpreter->GenerateDictionary("std::vector<std::vector<int> >", "vector");
+      outputTree->Branch("numClusters", &numClusters);
+      outputTree->Branch("clusterCharge", &clusterCharge);
+      outputTree->Branch("clusterChargeRMS", &clusterChargeRMS);
+      outputTree->Branch("clusterChargeBalance", &clusterChargeBalance);
+      outputTree->Branch("clusterNPE", &clusterNPE);
+      outputTree->Branch("clusterTime", &clusterTime);
+      outputTree->Branch("clusterTimeRMS", &clusterTimeRMS);
+      //outputTree->Branch("LegPolVals1", &LegPolVals1);
+      //outputTree->Branch("LegPolVals2", &LegPolVals2);
+      //outputTree->Branch("LegPolVals3", &LegPolVals3);
+      //outputTree->Branch("LegPolVals4", &LegPolVals4);
+      //outputTree->Branch("LegPolVals5", &LegPolVals5);
+      //outputTree->Branch("LegPolVals6", &LegPolVals6);
+      outputTree->Branch("numClusteredPMTHits", &numClusteredPMTHits);
+      outputTree->Branch("clusterHitsPMTID", &clusterHitsPMTID);
+      outputTree->Branch("clusterHitsPMTTime", &clusterHitsPMTTime);
+      outputTree->Branch("clusterHitsNPE", &clusterHitsNPE);
+      outputTree->Branch("clusterHitsPMTCharge", &clusterHitsPMTCharge);
+    }
+    this->AssignAdditionalAddresses();
+
+    return true;
+  }
+
+  Processor::Result OutANNIEClusterProc::DSEvent(DS::Root *ds) {
+    if (!this->outputFile) {
+      if (!OpenFile(this->defaultFilename.c_str())) {
+        Log::Die("No output file specified");
+      }
+    }
+
+    if( ds->ExistEV() ){
+      eventExist = 1;
+      info << dformat("event already exists \n");
+    }
+    else
+      eventExist = 0;
+
+    runBranch = DS::RunStore::GetRun(ds);
+    DS::PMTInfo *pmtinfo = runBranch->GetPMTInfo();
+    ULong64_t stonano = 1000000000;
+    dsentries++;
+    // Clear the previous vectors
+    pdgcodes.clear();
+    mcKEnergies.clear();
+    mcPosx.clear();
+    mcPosy.clear();
+    mcPosz.clear();
+    mcDirx.clear();
+    mcDiry.clear();
+    mcDirz.clear();
+    mcTime.clear();
+
+    DS::MC *mc = ds->GetMC();
+    mcpcount = mc->GetMCParticleCount();
+    for (int pid = 0; pid < mcpcount; pid++) {
+      DS::MCParticle *particle = mc->GetMCParticle(pid);
+      pdgcodes.push_back(particle->GetPDGCode());
+      mcKEnergies.push_back(particle->GetKE());
+      TVector3 mcpos = particle->GetPosition();
+      TVector3 mcdir = particle->GetMomentum();
+      mcPosx.push_back(mcpos.X());
+      mcPosy.push_back(mcpos.Y());
+      mcPosz.push_back(mcpos.Z());
+      mcDirx.push_back(mcdir.X() / mcdir.Mag());
+      mcDiry.push_back(mcdir.Y() / mcdir.Mag());
+      mcDirz.push_back(mcdir.Z() / mcdir.Mag());
+      mcTime.push_back(particle->GetTime());
+    }
+    // First particle's position, direction, and time
+    mcpdg = pdgcodes[0];
+    mcx = mcPosx[0];
+    mcy = mcPosy[0];
+    mcz = mcPosz[0];
+    mcu = mcDirx[0];
+    mcv = mcDiry[0];
+    mcw = mcDirz[0];
+    mct = mcTime[0];
+    mcke = accumulate(mcKEnergies.begin(), mcKEnergies.end(), 0.0);
+
+    mcx_firstStep = -666.0;
+    mcy_firstStep = -666.0;
+    mcz_firstStep = -666.0;
+    mcx_lastStep = -666.0;
+    mcy_lastStep = -666.0;
+    mcz_lastStep = -666.0;
+
+    //Getting the stopping point / end of track of the first particle
+    for (int trk = 0; trk < mc->GetMCTrackCount(); trk++) {
+      DS::MCTrack *track = mc->GetMCTrack(trk);
+
+      //Look only at the primary simulated particle
+      if( track->GetPDGCode() == mcpdg ){
+        //info << dformat("OutANNIEClusterProc: track number %d, track pdg code %d, MC pdg code %d \n", trk, track->GetPDGCode(), mcpdg);
+        DS::MCTrackStep *step = track->GetMCTrackStep(0);
+        TVector3 tv = step->GetEndpoint();
+        mcx_firstStep = tv.X();
+        mcy_firstStep = tv.Y();
+        mcz_firstStep = tv.Z();
+        step = track->GetMCTrackStep(track->GetMCTrackStepCount()-1);
+        tv = step->GetEndpoint();
+        mcx_lastStep = tv.X();
+        mcy_lastStep = tv.Y();
+        mcz_lastStep = tv.Z();
+        break;
+      }
+      
+      /* 
+      //Primary particle is neutron, save scattered protons...
+      } else if (mcpdg == 2112 && track->GetPDGCode() == 2212){ 
       info << dformat("OutANNIEClusterProc: track number %d, track pdg code %d, MC pdg code %d \n", trk, track->GetPDGCode(), mcpdg);
       DS::MCTrackStep *step = track->GetMCTrackStep(0);
       TVector3 tv = step->GetEndpoint();
@@ -295,8 +330,105 @@ Processor::Result OutANNIEClusterProc::DSEvent(DS::Root *ds) {
       mcDiry.push_back(step->GetLocalTime());
       mcDirz.push_back(step->GetProperTime());
       mcTime.push_back(step->GetGlobalTime());
+      }
+      */
+  }
+
+  int nTrks = mc->GetMCTrackCount();
+  // Clear previous event
+  n_trackPDG.clear();
+  n_trackPosX.clear();
+  n_trackPosY.clear();
+  n_trackPosZ.clear();
+  n_trackMomX.clear();
+  n_trackMomY.clear();
+  n_trackMomZ.clear();
+  n_trackKE.clear();
+  n_trackTime.clear();
+  //n_trackPDG_str.clear();
+  //n_track_nCapVol.clear();
+
+  std::vector<double> n_xtrack, n_ytrack, n_ztrack;
+  std::vector<double> n_pxtrack, n_pytrack, n_pztrack;
+  std::vector<double> n_kinetic, n_globaltime;
+  std::vector<std::string> nCap_fVol;
+  std::vector<int> n_PDGtrack;
+
+  for (int trk = 0; trk < nTrks; trk++) {
+    DS::MCTrack *track = mc->GetMCTrack(trk);
+    n_xtrack.clear();
+    n_ytrack.clear();
+    n_ztrack.clear();
+    n_pxtrack.clear();
+    n_pytrack.clear();
+    n_pztrack.clear();
+    n_kinetic.clear();
+    n_globaltime.clear();
+    n_PDGtrack.clear();
+    //PDG_str.clear();
+    nCap_fVol.clear();
+
+    int nSteps = track->GetMCTrackStepCount();
+    for (int stp = 0; stp < nSteps; stp++) {
+      DS::MCTrackStep *step = track->GetMCTrackStep(stp);
+      // Process
+      std::string proc = step->GetProcess();
+      std::string _fVol = step->GetVolume();
+      TVector3 intpoint = step->GetEndpoint();
+      double _fEnergy = step->GetKE();
+      
+      /*
+      std::cout << "parentID: " << track->GetParentID() <<std::endl;
+      std::cout << "energy deposited in step: " << step->GetDepositedEnergy() << std::endl;
+      std::cout << "process************************: " << proc << std::endl;
+
+      if(track->GetPDGCode() == 22){
+        std::cout << "process************************: " << proc << std::endl;
+        std::cout << "volume: " << _fVol << std::endl;
+      }
+      */
+      if(proc == "nCapture" && mcpdg == 2112){
+        info << dformat("neutron capture \n");
+        //std::cout << "particle pdg: "  << track->GetPDGCode() << std::endl;
+        //std::cout << "particle make: "  << track->GetParticleName() << std::endl;
+        //std::cout << "energy: " << _fEnergy << std::endl;
+        //std::cout << "event position: x: " << intpoint.X() << " y: " << intpoint.Y() << " z: " << intpoint.Z() << std::endl;
+        //std::cout << "volume " << _fVol << std::endl;
+
+        if(_fVol == "wblsvolume_liquid"){
+          CapInsideSANDI = 1;
+        }
+        else{
+          CapInsideSANDI = 0;
+        }
+
+        TVector3 tv = step->GetEndpoint();
+        TVector3 momentum = step->GetMomentum();
+        n_kinetic.push_back(step->GetKE());
+        n_globaltime.push_back(step->GetGlobalTime());
+        n_xtrack.push_back(tv.X());
+        n_ytrack.push_back(tv.Y());
+        n_ztrack.push_back(tv.Z());
+        n_pxtrack.push_back(momentum.X());
+        n_pytrack.push_back(momentum.Y());
+        n_pztrack.push_back(momentum.Z());
+        //PDG_str.push_back(track->GetParticleName());
+        nCap_fVol.push_back(_fVol);
+        n_PDGtrack.push_back(track->GetPDGCode());
+      }
     }
-    */
+
+    n_trackKE.push_back(n_kinetic);
+    n_trackTime.push_back(n_globaltime);
+    n_trackPosX.push_back(n_xtrack);
+    n_trackPosY.push_back(n_ytrack);
+    n_trackPosZ.push_back(n_ztrack);
+    n_trackMomX.push_back(n_pxtrack);
+    n_trackMomY.push_back(n_pytrack);
+    n_trackMomZ.push_back(n_pztrack);
+    n_trackPDG.push_back(n_PDGtrack);
+    //n_trackPDG_str.push_back(PDG_str);
+    //n_track_nCapVol.push_back(nCap_fVol);
   }
 
   // Tracking
@@ -428,9 +560,11 @@ Processor::Result OutANNIEClusterProc::DSEvent(DS::Root *ds) {
     //gInterpreter->GenerateDictionary("std::vector<std::vector<int> >", "vector");
     numClusters = 0;
     clusterCharge = 0;
+    clusterChargeRMS = 0;
     clusterChargeBalance = 0;
     clusterNPE = 0;
     clusterTime = 0;
+    clusterTimeRMS = 0;
     numClusteredPMTHits = 0;
     clusterHitsPMTID.clear();
     clusterHitsPMTTime.clear();
@@ -440,7 +574,7 @@ Processor::Result OutANNIEClusterProc::DSEvent(DS::Root *ds) {
     for(int iC=0; iC<clusterHitsPMTID.size(); iC++){
       clusterHitsPMTID[iC] = pmtinfo->GetChannelNumber( clusterHitsPMTID[iC] );
     }
-    
+
   }
 
   // EV Branches
@@ -586,9 +720,9 @@ OutANNIEClusterProc::~OutANNIEClusterProc() {
     metaTree->Write();
     outputTree->Write();
     /*
-    TMap* dbtrace = Log::GetDBTraceMap();
-    dbtrace->Write("db", TObject::kSingleKey);
-    */
+       TMap* dbtrace = Log::GetDBTraceMap();
+       dbtrace->Write("db", TObject::kSingleKey);
+       */
     // outputFile->Write(0, TObject::kOverwrite);
     outputFile->Close();
     delete outputFile;
@@ -628,6 +762,80 @@ void OutANNIEClusterProc::SetS(std::string param, std::string value) {
   }
 }
 
+void OutANNIEClusterProc::ClusterParameters(std::vector<double> hit_x, std::vector<double> hit_y, std::vector<double> hit_z, std::vector<double> hit_t, std::vector<double> hit_q, std::vector<double> vertex) {
+//std::vector<double> OutANNIEClusterProc::ClusterParameters(std::vector<double> hit_x, std::vector<double> hit_y, std::vector<double> hit_z, std::vector<double> hit_t, std::vector<double> hit_q, std::vector<double> vertex) {
+
+  double legendrePol1 = 0.0;
+  double legendrePol2 = 0.0;
+  double legendrePol3 = 0.0;
+  double legendrePol4 = 0.0;
+  double legendrePol5 = 0.0;
+  double legendrePol6 = 0.0;
+  
+  /*
+  int nPols = 6;
+  std::vector<double> LegPolVals1;
+  std::vector<double> LegPolVals2;
+  std::vector<double> LegPolVals3;
+  std::vector<double> LegPolVals4;
+  std::vector<double> LegPolVals5;
+  std::vector<double> LegPolVals6;
+  */
+
+  LegPolVals1.clear();
+  LegPolVals2.clear();
+  LegPolVals3.clear();
+  LegPolVals4.clear();
+  LegPolVals5.clear();
+  LegPolVals6.clear();
+
+  for(int i = 0; i < hit_x.size() - 1; i++){
+
+    double dx_i = hit_x[i] - vertex[0];
+    double dy_i = hit_y[i] - vertex[1];
+    double dz_i = hit_z[i] - vertex[2];
+    double mag_i = std::sqrt(dx_i*dx_i + dy_i*dy_i + dz_i*dz_i);
+
+    for(int j = i; j < hit_x.size(); j++){
+
+      double dx_j = hit_x[j] - vertex[0];
+      double dy_j = hit_y[j] - vertex[1];
+      double dz_j = hit_z[j] - vertex[2];
+      double mag_j = std::sqrt(dx_j*dx_j + dy_j*dy_j + dz_j*dz_j);
+      double cos_aij = dx_i*dx_j + dy_i*dy_j + dz_i*dz_j;
+      cos_aij = cos_aij/(mag_i*mag_j);
+      /* 
+      for(int k = 0; k < nPols; k++){
+        legendrePol = ROOT::Math::legendre(k,cos_aij);
+        LegPolVals.push_back(legendrePol);
+      }
+      */
+
+      legendrePol1 = cos_aij;
+      LegPolVals1.push_back(legendrePol1);
+      
+      legendrePol2 = (3*std::pow(cos_aij,2.0) - 1)/2.0;
+      LegPolVals2.push_back(legendrePol2);
+
+      legendrePol3 = (5*std::pow(cos_aij,3.0) - 3*cos_aij)/2.0;
+      LegPolVals3.push_back(legendrePol3);
+    
+      legendrePol4 = (35*std::pow(cos_aij,4.0) - 30.0*std::pow(cos_aij,2.0) + 3.0)/8.0;
+      LegPolVals4.push_back(legendrePol4);
+    
+      legendrePol5 = (63.0*std::pow(cos_aij,5.0) - 70.0*std::pow(cos_aij,3.0) + 15.0*cos_aij)/8.0;
+      LegPolVals5.push_back(legendrePol5);
+    
+      legendrePol6 = (231.0*std::pow(cos_aij,6.0) - 315.0*std::pow(cos_aij,4.0) + 105.0*std::pow(cos_aij,2.0) - 5.0)/16.0;
+      LegPolVals6.push_back(legendrePol6);
+    
+    }
+  }
+
+  //return LegPolVals6;
+
+}
+
 void OutANNIEClusterProc::SetI(std::string param, int value) {
   if (param == "include_tracking") {
     options.tracking = value ? true : false;
@@ -651,6 +859,13 @@ void OutANNIEClusterProc::SetI(std::string param, int value) {
 
 //TODO: Make it so that ClusterFinder is only invoked for the tank PMTs
 bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
+
+  double t_delay_mu = 1101.0;
+  double t_delay_sigma = 4.0;
+
+  std::random_device delayGen;
+  std::mt19937 gen(delayGen());
+  std::normal_distribution<> delayDis(t_delay_mu, t_delay_sigma);
 
   v_datalike_time.clear();
   v_datalike_charge.clear();
@@ -688,6 +903,7 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
     int temp_npe = 0;
     double temp_charges = 0.0;
     double mid_time;    
+    double delay;
     if (v_temp_time.size() > 0){
       for (int i_hit=0; i_hit < v_temp_time.size(); i_hit++){
         double hit1 = v_temp_time.at(i_hit);
@@ -713,13 +929,16 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
             else{
               mid_time = temp_times.at(temp_times.size()/2);
             }
+            delay = delayDis(gen); 
+            //std::cout << "dealy is ************************************* " << delay << std::endl;
+            mid_time += delay;
 
             v_datalike_time.push_back(mid_time);
             v_datalike_charge.push_back(temp_charges);
             v_datalike_npe.push_back(temp_npe);
             v_datalike_pmtid.push_back( mcpmt->GetID());           
             v_hittimes.push_back(mid_time);
-            
+
             temp_times.clear();
             temp_charges = 0.0;
             temp_npe = 0;
@@ -735,12 +954,17 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
       else{
         mid_time = temp_times.at(temp_times.size()/2);
       }
+
+      delay = delayDis(gen); 
+      //std::cout << "delay is ************************************* " << delay << std::endl;
+      mid_time += delay;
+
       v_datalike_time.push_back(mid_time);
       v_datalike_charge.push_back(temp_charges);
       v_datalike_npe.push_back(temp_npe);
       v_datalike_pmtid.push_back(mcpmt->GetID());           
       v_hittimes.push_back(mid_time);
-      
+
     }
   }
 
@@ -769,7 +993,7 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
     v_hittimes_sorted.insert(v_hittimes_sorted.begin(),max_time);
     v_hittimes.erase(v_hittimes.begin() + i_max_time);
   } while (v_hittimes.size() != 0);
-    
+
 
   // Move a time window within the array and look for the window with the highest number of hits
   for (std::vector<double>::iterator it = v_hittimes_sorted.begin(); it != v_hittimes_sorted.end(); ++it) {
@@ -844,7 +1068,9 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
   double max_cluster_charge = 0.0;
   for (std::vector<double>::iterator it = v_clusters.begin(); it != v_clusters.end(); ++it) {
     double local_cluster_charge = 0;
+    double local_cluster_charge_rms = 0;
     double local_cluster_time = 0;
+    double local_cluster_time_rms = 0;
     double local_cluster_cb = 0.0;
     int local_cluster_npe = 0;
     v_local_cluster_times.clear();
@@ -857,6 +1083,7 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
     for(int ihit = 0; ihit < v_datalike_time.size(); ihit++){
       if (v_datalike_time[ihit] >= *it && v_datalike_time[ihit] <= *it + clusterSettings.clusterFindingWindow) {
         local_cluster_charge += v_datalike_charge[ihit];
+        local_cluster_charge_rms += v_datalike_charge[ihit]*v_datalike_charge[ihit];
         local_cluster_npe += v_datalike_npe[ihit];
         local_cluster_cb += v_datalike_charge[ihit]*v_datalike_charge[ihit];
         v_local_cluster_times.push_back(v_datalike_time[ihit]);
@@ -868,7 +1095,8 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
       }
     }
     for (std::vector<double>::iterator itt = v_local_cluster_times.begin(); itt != v_local_cluster_times.end(); ++itt) {
-     local_cluster_time += *itt;
+      local_cluster_time += *itt;
+      local_cluster_time_rms += std::pow(*itt,2.0);
     }
     local_cluster_time /= v_local_cluster_times.size();
     local_cluster_cb = sqrt(local_cluster_cb/(local_cluster_charge*local_cluster_charge) - 1.0/121.0 );
@@ -876,10 +1104,11 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
     if(max_cluster_charge < local_cluster_charge){
       max_cluster_charge = local_cluster_charge;
       clusterCharge = local_cluster_charge;
+      clusterChargeRMS = sqrt(local_cluster_charge_rms - pow(local_cluster_charge,2.0));
       clusterChargeBalance = local_cluster_cb;
       clusterNPE = local_cluster_npe;
       clusterTime = local_cluster_time;
-
+      clusterTimeRMS = sqrt(local_cluster_time_rms - pow(local_cluster_time,2.0));
       numClusteredPMTHits = local_clusterHitsPMTID.size();
       clusterHitsPMTID.resize(numClusteredPMTHits);
       clusterHitsPMTTime.resize(numClusteredPMTHits);
@@ -891,7 +1120,7 @@ bool OutANNIEClusterProc::ClusterFinder(DS::MC *mc){
         clusterHitsNPE[iCHit] = local_clusterHitsNPE[iCHit];
         clusterHitsPMTCharge[iCHit] = local_clusterHitsPMTCharge[iCHit];    
       }
-     
+
     }
 
     //if (verbose > 0) cout << "Local cluster at " << local_cluster_time << " ns with a total charge of " << local_cluster_charge << " (" << v_local_cluster_times.size() << " hits)" << endl;

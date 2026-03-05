@@ -6,7 +6,7 @@ valid_end: [0, 0],
 
 default_output_filename: "output.ntuple.root",
 include_tracking: false,
-include_mcparticles: false,
+include_mcparticles: true,
 include_pmthits: true,
 include_untriggered_events: true,
 include_mchits: true,

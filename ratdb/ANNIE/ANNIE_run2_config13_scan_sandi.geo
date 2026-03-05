@@ -82,7 +82,9 @@ type: "tube",
 r_max: 1516.6,
 size_z: 1973.8,
 position: [0.0, 0.0, 0.0],
-material: "water_gdS_0p2",
+//material: "water_gdS_0p2",
+//material: "water",
+material: "wbls1pct_ly95_gdS0p2pct_SANDI",
 color: [0.6, 0.8, 1.0, 0.1],
 invisible: 1,
 drawstyle: "solid",
@@ -141,7 +143,8 @@ pmt_model: "r7081_ANNIE", // Watchboy 10 inch
 pmt_detector_type: "idpmt",
 sensitive_detector: "/mydet/pmt/inner", 
 //efficiency_correction: 1.000,  
-pos_table: "PMTINFO_config13_scan_side_ring_1_TILTED",
+//pos_table: "PMTINFO_config13_scan_side_ring_1_ipmtTILTED",
+pos_table: "PMTINFO_config13_scan_side_ring_1",
 orientation: "manual",
 } 
 
@@ -175,7 +178,8 @@ pmt_model: "r7081_ANNIE",
 pmt_detector_type: "idpmt",
 sensitive_detector: "/mydet/pmt/inner", 
 //efficiency_correction: 1.000,  
-pos_table: "PMTINFO_config13_scan_side_ring_2_2_TILTED",
+//pos_table: "PMTINFO_config13_scan_side_ring_2_2_ipmtTILTED",
+pos_table: "PMTINFO_config13_scan_side_ring_2_2",
 orientation: "manual",
 } 
 
@@ -209,7 +213,8 @@ pmt_model: "r7081_ANNIE",
 pmt_detector_type: "idpmt",
 sensitive_detector: "/mydet/pmt/inner", 
 //efficiency_correction: 1.000,  
-pos_table: "PMTINFO_config13_scan_side_ring_4_1_TILTED",
+//pos_table: "PMTINFO_config13_scan_side_ring_4_1_ipmtTILTED",
+pos_table: "PMTINFO_config13_scan_side_ring_4_1",
 orientation: "manual", 
 } 
 
@@ -226,7 +231,8 @@ pmt_model: "r7081_hqe_ANNIE",
 pmt_detector_type: "idpmt",
 sensitive_detector: "/mydet/pmt/inner", 
 //efficiency_correction: 1.000,  
-pos_table: "PMTINFO_config13_scan_side_ring_4_2_TILTED",
+//pos_table: "PMTINFO_config13_scan_side_ring_4_2_ipmtTILTED",
+pos_table: "PMTINFO_config13_scan_side_ring_4_2",
 orientation: "manual",  
 } 
 
@@ -260,7 +266,8 @@ pmt_model: "r7081_ANNIE",
 pmt_detector_type: "idpmt",
 sensitive_detector: "/mydet/pmt/inner", 
 //efficiency_correction: 1.000,  
-pos_table: "PMTINFO_config13_scan_side_ring_6_TILTED",
+//pos_table: "PMTINFO_config13_scan_side_ring_6_ipmtTILTED",
+pos_table: "PMTINFO_config13_scan_side_ring_6",
 orientation: "manual", 
 }
 
@@ -298,14 +305,14 @@ index: "InnerStructure_Holders_Blacksheets",
 valid_begin: [0, 0],
 valid_end: [0, 0],
 mother: "detector",
-enable_inner_structure: 0, // setting this to 0 enables faster loading but no inner structure of course
+enable_inner_structure: 1, // setting this to 0 enables faster loading but no inner structure of course
 inner_structure_gdml_file: "../share/annie/ratdb/ANNIE/annie_phase2_structure.gdml",
 inner_structure_center: [0.0, 0.0, -1981.2],
 inner_structure_rotation_angle: 157.5, // to rotate the structure along the Z (vertical) axis. 67.5° from stl file and 90° from x-y difference in RATPAC
 inner_structure_wrapper_material: "tyvek_wrapper_ANNIE", //"tyvek", //could be something different, which is defined in the OPTICS_ANNIE.ratdb
 inner_structure_color: [1.0, 0.0, 0.0, 1.0],
 inner_structure_invisible: 0,
-enable_sandi_configuration: 1,
+enable_sandi_configuration: 0,
 pmt_position_file:"../share/annie/ratdb/ANNIE/PMTPositions_Scan.txt",
 enable_annie_holders: 1, //ANNIE holders on the side; code copied from WCSim 
 annie_holders_color: [1.0, 1.0, 1.0, 0.5],
@@ -318,9 +325,32 @@ black_sheet_color: [0.0, 1.0, 0.0, 0.2],
 black_sheet_invisible: 1,
 write_gdml: 0, //Write a gdml file to check the geometry by eye with a CAD program
 gdml_out_file: "test_output.gdml",
+enable_superSANDI: 0,
 type: "annieInnerStructures", //see the geo factory
 }
 
 /////////////////////////////////////////////////////////////////////
 //////////******** End of inner structures ********//////////////////
+/////////////////////////////////////////////////////////////////////
+
+
+/////////////////////////////////////////////////////////////////////
+////////////////******** nylon vessel ********///////////////////////
+/////////////////////////////////////////////////////////////////////
+
+{
+name: "SuperSANDIGeo",
+index: "SuperSANDIConfig",
+valid_begin: [0, 0],
+valid_end: [0, 0],
+nylon_vessel_position: [0.0, 0.0, -25.0],
+vessel_invisible: 0,
+nylon_vessel_color: [0.0, 1.0, 0.0, 1.0],
+detection_medium_invisible: 0,
+detmed_color: [0.0, 1.0, 0.5, 0.2],
+detection_medium_material:"wbls1pct_ly95_gdS0p2pct_SANDI",
+}
+
+/////////////////////////////////////////////////////////////////////
+///////////////******** end of nylon vessel ********/////////////////
 /////////////////////////////////////////////////////////////////////
